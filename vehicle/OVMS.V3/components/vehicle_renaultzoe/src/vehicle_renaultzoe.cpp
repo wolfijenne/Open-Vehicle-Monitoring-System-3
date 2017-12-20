@@ -76,7 +76,6 @@ static const OvmsVehicle::poll_pid_t vehicle_renaultzoe_polls[] =
 { 0, 0, 0x00, 0x00, { 0, 0, 0 } }
 
 };
-// Start Insertion from Kia Soul
 
 // Init
 OvmsVehicleRenaultZoe::OvmsVehicleRenaultZoe()
@@ -319,10 +318,8 @@ void OvmsVehicleRenaultZoe::IncomingPollReply(canbus* bus, uint16_t type, uint16
 //    uint8_t bVal;
 //    UINT base;
 //    uint32_t lVal;
-
     
     switch (m_poll_moduleid_low) {
-            
         case 0x7ec:
             switch (pid) {
                 case 0x2002: {
