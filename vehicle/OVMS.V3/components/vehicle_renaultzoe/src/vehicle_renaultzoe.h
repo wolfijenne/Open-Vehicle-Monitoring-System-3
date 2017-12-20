@@ -44,6 +44,7 @@ class OvmsVehicleRenaultZoe : public OvmsVehicle
 
 public:
 void IncomingFrameCan1(CAN_frame_t* p_frame);
+// void Ticker1(uint32_t ticker, OvmsWriter* writer);
 void Ticker1(uint32_t ticker);
 void IncomingPollReply(canbus* bus, uint16_t type, uint16_t pid, uint8_t* data, uint8_t length, uint16_t mlremain);
 void ConfigChanged(OvmsConfigParam* param);
@@ -72,6 +73,8 @@ OvmsMetricFloat*  m_b_cell_volt_max;           // Battery cell maximum voltage
 OvmsMetricFloat*  m_b_cell_volt_min;           // Battery cell minimum voltage
 OvmsMetricFloat*  m_b_cell_det_max;               // Battery cell maximum detoriation
 OvmsMetricFloat*  m_b_cell_det_min;               // Battery cell minimum detoriation
+OvmsMetricFloat*  m_b_bat_avail_energy;               // Battery available kWh
+OvmsMetricFloat*  ms_v_bat_max_charge_power;    // Max Bat Charge
 OvmsMetricFloat*  m_c_power;                            // Available charge power
 //float rz_battery_max_detoriation;                 //02 21 05 -> 24 1+2
 //float rz_battery_min_detoriation;                 //02 21 05 -> 24 4+5
@@ -88,13 +91,10 @@ char m_vin[18];
 uint32_t rz_tpms_id[4];
 float rz_obc_volt;
 
-float rz_trip_start_odo;
-float rz_last_soc;
-float rz_last_ideal_range;
-uint8_t rz_bms_soc;
-float rz_start_cdc;                     // Used to calculate trip power use (Cumulated discharge)
-float rz_start_cc;                      // Used to calculate trip recuperation (Cumulated charge)
-float rz_cum_charge_start;     // Used to calculate charged power.
+float rz_bat_current;
+float rz_bat_voltage;
+float rz_bat_power;
+
 
 int8_t rz_battery_module_temp[12];
 
@@ -145,6 +145,7 @@ const TickType_t xDelay = 50 / portTICK_PERIOD_MS;
 // CAN buffer access macros: b=byte# 0..7 / n=nibble# 0..15
 #define CAN_BYTE(b)     data[b]
 #define CAN_UINT(b)     (((UINT)CAN_BYTE(b) << 8) | CAN_BYTE(b+1))
+// #define CAN_7NIBL(b)    (((UINT)CAN_BYTE((int)b/8) << 8) | (CAN_BYTE(((int)b/8)+1)) >> (b-(int)b/8))
 #define CAN_UINT24(b)   (((uint32_t)CAN_BYTE(b) << 16) | ((UINT)CAN_BYTE(b+1) << 8) | CAN_BYTE(b+2))
 #define CAN_UINT32(b)   (((uint32_t)CAN_BYTE(b) << 24) | ((uint32_t)CAN_BYTE(b+1) << 16)  | ((UINT)CAN_BYTE(b+2) << 8) | CAN_BYTE(b+3))
 #define CAN_NIBL(b)     (can_databuffer[b] & 0x0f)
@@ -155,6 +156,26 @@ const TickType_t xDelay = 50 / portTICK_PERIOD_MS;
 #define TO_PSI(n)        ((float)n/4.0)
 
 #define BAT_SOC            StdMetrics.ms_v_bat_soc->AsFloat(100)
+#define BATS_CURR          StdMetrics.ms_v_bat_12v_current->AsFloat(100)
+#define BATS_VOLT          StdMetrics.ms_v_bat_12v_voltage->AsFloat(100)
+#define BAT_CAC            StdMetrics.ms_v_b_cac->AsFloat(100)
+#define BAT_CURR           StdMetrics.ms_v_bat_current->AsFloat(100)
+#define BAT_VOLTAGE        StdMetrics.ms_v_bat_voltage->AsFloat(100)
+#define BAT_ENERG_REC      StdMetrics.ms_v_b_energy_recd->AsFloat(100)
+#define BAT_ENERG_USED     StdMetrics.ms_v_b_energy_used->AsFloat(100)
+#define BAT_POWER          StdMetrics.ms_v_bat_power->AsFloat(100)
+#define BAT_TEMP           StdMetrics.ms_v_bat_temp->AsFloat(100)
+#define ENV_TEMP           StdMetrics.ms_v_env_temp->AsFloat(100)
+
+#define TPMS_FL_T          StdMetrics.ms_v_tpms_fl_t->AsFloat(100);
+#define TPMS_FR_T          StdMetrics.ms_v_tpms_fr_t->AsFloat(100);
+#define TPMS_RR_T          StdMetrics.ms_v_tpms_rr_t->AsFloat(100);
+#define TPMS_RL_T          StdMetrics.ms_v_tpms_rl_t->AsFloat(100);
+#define TPMS_FL_P          StdMetrics.ms_v_tpms_fl_p->AsFloat(100);
+#define TPMS_FR_P          StdMetrics.ms_v_tpms_fr_p->AsFloat(100);
+#define TPMS_RR_P          StdMetrics.ms_v_tpms_rr_p->AsFloat(100);
+#define TPMS_RL_P          StdMetrics.ms_v_tpms_rl_p->AsFloat(100);
+
 #define BAT_SOH            StdMetrics.ms_v_bat_soh->AsFloat(100)
 #define LIMIT_SOC        StdMetrics.ms_v_charge_limit_soc->AsFloat(0)
 #define LIMIT_RANGE        StdMetrics.ms_v_charge_limit_range->AsFloat(0, Kilometers)
