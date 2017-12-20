@@ -27,34 +27,21 @@
 ; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 ; THE SOFTWARE.
 */
-#ifndef __OVMS_SHELL_H__
-#define __OVMS_SHELL_H__
 
+#ifndef __VFS_EDIT_H__
+#define __VFS_EDIT_H__
+
+#include <string>
+#include <string.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <libgen.h>
+#include "ovms_config.h"
 #include "ovms_command.h"
-#include "microrl.h"
 
-#define TOKEN_MAX_LENGTH 32
-#define COMPLETION_MAX_TOKENS 20
+extern void vfs_edit(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc, const char* const* argv);
 
-class OvmsShell : public OvmsWriter
-  {
-  public:
-    OvmsShell(int verbosity = COMMAND_RESULT_MINIMAL);
-
-  public:
-    void Initialize(bool print);
-    void ProcessChar(char c);
-    void ProcessChars(const char* buf, int len);
-    void PrintConditional(const char* buf);
-
-  protected:
-    virtual void finalise() {}
-
-  protected:
-    microrl_t m_rl;
-
-  public:
-    int m_verbosity;
-  };
-
-#endif //#ifndef __OVMS_SHELL_H__
+#endif //#ifndef __VFS_EDIT_H__

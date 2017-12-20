@@ -155,11 +155,18 @@ simcom::simcom(const char* name, uart_port_t uartnum, int baud, int rxpin, int t
   m_state1_userdata = 0;
   m_netreg = NotRegistered;
   m_powermode = Off;
+  m_gps_required = false;
+  m_line_unfinished = -1;
+  m_line_buffer.clear();
   StartTask();
 
   using std::placeholders::_1;
   using std::placeholders::_2;
   MyEvents.RegisterEvent(TAG,"ticker.1", std::bind(&simcom::Ticker, this, _1, _2));
+  MyEvents.RegisterEvent(TAG, "vehicle.require.gps", std::bind(&simcom::EventListener, this, _1, _2));
+  MyEvents.RegisterEvent(TAG, "vehicle.release.gps", std::bind(&simcom::EventListener, this, _1, _2));
+  MyEvents.RegisterEvent(TAG, "vehicle.require.gpstime", std::bind(&simcom::EventListener, this, _1, _2));
+  MyEvents.RegisterEvent(TAG, "vehicle.release.gpstime", std::bind(&simcom::EventListener, this, _1, _2));
   }
 
 simcom::~simcom()
@@ -255,6 +262,42 @@ void simcom::Ticker(std::string event, void* data)
     }
   }
 
+void simcom::EventListener(std::string event, void* data)
+  {
+  if (event == "vehicle.require.gps")
+    {
+    m_gps_required = true;
+    if (!m_nmea.m_connected)
+      {
+      // power on if necessary:
+      SetPowerMode(On);
+      // if powering on now, GPS will be started automatically, else:
+      if (m_state1 != PoweringOn)
+        m_nmea.Startup(m_gps_required);
+      }
+    }
+  else if (event == "vehicle.release.gps")
+    {
+    m_gps_required = false;
+    if (m_nmea.m_connected && !MyConfig.GetParamValueBool("modem", "enable.gps", false))
+      {
+      // if we were powered on just for GPS, power off:
+      if (m_state1 == NetHold)
+        SetState1(PoweringOff);
+      else
+        m_nmea.Shutdown();
+      }
+    }
+  else if (event == "vehicle.require.gpstime")
+    {
+    m_nmea.m_gpstime_required = true;
+    }
+  else if (event == "vehicle.release.gpstime")
+    {
+    m_nmea.m_gpstime_required = false;
+    }
+  }
+
 void simcom::IncomingMuxData(GsmMuxChannel* channel)
   {
   // The MUX has indicated there is data on the specified channel
@@ -265,7 +308,7 @@ void simcom::IncomingMuxData(GsmMuxChannel* channel)
       channel->m_buffer.EmptyAll();
       break;
     case GSM_MUX_CHAN_NMEA:
-      if (channel->m_buffer.HasLine() >= 0)
+      while (channel->m_buffer.HasLine() >= 0)
         m_nmea.IncomingLine(channel->m_buffer.ReadLine());
       break;
     case GSM_MUX_CHAN_DATA:
@@ -279,13 +322,13 @@ void simcom::IncomingMuxData(GsmMuxChannel* channel)
           }
         }
       else
-        StandardIncomingHandler(&channel->m_buffer);
+        StandardIncomingHandler(channel->m_channel, &channel->m_buffer);
       break;
     case GSM_MUX_CHAN_POLL:
-      StandardIncomingHandler(&channel->m_buffer);
+      StandardIncomingHandler(channel->m_channel, &channel->m_buffer);
       break;
     case GSM_MUX_CHAN_CMD:
-      StandardIncomingHandler(&channel->m_buffer);
+      StandardIncomingHandler(channel->m_channel, &channel->m_buffer);
       break;
     default:
       break;
@@ -369,7 +412,7 @@ void simcom::State1Enter(SimcomState1 newstate)
       break;
     case NetWait:
       ESP_LOGI(TAG,"State: Enter NetWait state");
-      m_nmea.Startup();
+      m_nmea.Startup(m_gps_required);
       break;
     case NetStart:
       ESP_LOGI(TAG,"State: Enter NetStart state");
@@ -435,7 +478,7 @@ simcom::SimcomState1 simcom::State1Activity()
       return PoweredOn;
       break;
     case PoweredOn:
-      if (StandardIncomingHandler(&m_buffer))
+      if (StandardIncomingHandler(GSM_MUX_CHAN_CTRL, &m_buffer))
         {
         if (m_state1_ticker >= 20) return MuxStart;
         }
@@ -600,7 +643,7 @@ simcom::SimcomState1 simcom::State1Ticker1()
   return None;
   }
 
-bool simcom::StandardIncomingHandler(OvmsBuffer* buf)
+bool simcom::StandardIncomingHandler(int channel, OvmsBuffer* buf)
   {
   bool result = false;
 
@@ -610,24 +653,23 @@ bool simcom::StandardIncomingHandler(OvmsBuffer* buf)
       {
       // Expecting N bytes of data mode
       if (buf->UsedSpace() < (size_t)buf->m_userdata) return false;
-      StandardDataHandler(buf);
+      StandardDataHandler(channel, buf);
       result = true;
       }
     else
       {
       // Normal line mode
-      if (buf->HasLine() >= 0)
+      while (buf->HasLine() >= 0)
         {
-        StandardLineHandler(buf, buf->ReadLine());
+        StandardLineHandler(channel, buf, buf->ReadLine());
         result = true;
         }
-      else
-        return result;
+      return result;
       }
     }
   }
 
-void simcom::StandardDataHandler(OvmsBuffer* buf)
+void simcom::StandardDataHandler(int channel, OvmsBuffer* buf)
   {
   // We have SMS data ready...
   size_t needed = (size_t)buf->m_userdata;
@@ -641,10 +683,27 @@ void simcom::StandardDataHandler(OvmsBuffer* buf)
   buf->m_userdata = 0;
   }
 
-void simcom::StandardLineHandler(OvmsBuffer* buf, std::string line)
+void simcom::StandardLineHandler(int channel, OvmsBuffer* buf, std::string line)
   {
-  MyCommandApp.HexDump("SIMCOM line",line.c_str(),line.length());
+  if (line.length() == 0)
+    return;
 
+  // expecting continuation of previous line?
+  if (m_line_unfinished == channel)
+    {
+    m_line_buffer += line;
+    if (m_line_buffer.length() > 1000)
+      {
+      ESP_LOGE(TAG, "rx line buffer grown too long, discarding");
+      m_line_buffer.clear();
+      m_line_unfinished = -1;
+      return;
+      }
+    line = m_line_buffer;
+    }
+  
+  ESP_LOGD(TAG, "rx line ch=%d len=%-4d: %s", channel, line.length(), line.c_str());
+  
   if ((line.compare(0, 8, "CONNECT ") == 0)&&(m_state1 == NetStart)&&(m_state1_userdata == 1))
     {
     ESP_LOGI(TAG, "PPP Connection is ready to start");
@@ -716,6 +775,7 @@ void simcom::StandardLineHandler(OvmsBuffer* buf, std::string line)
         }
       }
     }
+  // SMS received (URC):
   else if (line.compare(0, 6, "+CMT: ") == 0)
     {
     size_t qp = line.find_last_of(',');
@@ -723,6 +783,34 @@ void simcom::StandardLineHandler(OvmsBuffer* buf, std::string line)
       {
       buf->m_userdata = (void*)atoi(line.substr(qp+1).c_str());
       ESP_LOGI(TAG,"SMS length is %d",(int)buf->m_userdata);
+      }
+    }
+  // MMI/USSD response (URC):
+  //  sent on all free channels, so we only process GSM_MUX_CHAN_CMD
+  else if (channel == GSM_MUX_CHAN_CMD && line.compare(0, 7, "+CUSD: ") == 0)
+    {
+    // Format: +CUSD: 0,"…msg…",15
+    // The message string may contain CR/LF so can come on multiple lines, with unknown length
+    size_t q1 = line.find('"');
+    size_t q2 = line.find_last_of('"');
+    if (q1 == string::npos || q2 == q1)
+      {
+      // check again after adding next line:
+      if (m_line_unfinished < 0)
+        {
+        m_line_unfinished = channel;
+        m_line_buffer = line;
+        m_line_buffer += "\n";
+        }
+      }
+    else
+      {
+      // complete, process:
+      m_line_buffer = line.substr(q1+1, q2-q1-1);
+      ESP_LOGI(TAG, "USSD received: %s", m_line_buffer.c_str());
+      MyEvents.SignalEvent("system.modem.received.ussd", (void*)m_line_buffer.c_str());
+      m_line_unfinished = -1;
+      m_line_buffer.clear();
       }
     }
   }
@@ -756,6 +844,8 @@ void simcom::tx(const char* data, ssize_t size)
   if (!m_task) return; // Quick exit if not task (we are stopped)
   if (size == -1) size = strlen(data);
   MyCommandApp.HexDump("SIMCOM tx",data,size);
+  if (size > 0)
+    ESP_LOGD(TAG, "tx scmd ch=0 len=%-4d: %s", size, data);
   uart_write_bytes(m_uartnum, data, size);
   }
 
@@ -771,7 +861,30 @@ void simcom::muxtx(int channel, const char* data, ssize_t size)
   if (!m_task) return; // Quick exit if not task (we are stopped)
   if (size == -1) size = strlen(data);
   MyCommandApp.HexDump("SIMCOM mux tx",data,size);
+  if (size > 0 && (channel == GSM_MUX_CHAN_POLL || channel == GSM_MUX_CHAN_CMD))
+    ESP_LOGD(TAG, "tx mcmd ch=%d len=%-4d: %s", channel, size, data);
   m_mux.tx(channel, (uint8_t*)data, size);
+  }
+
+bool simcom::txcmd(const char* data, ssize_t size)
+  {
+  if (!m_task) return false; // Quick exit if not task (we are stopped)
+  if (size == -1) size = strlen(data);
+  if (size <= 0) return false;
+  if (m_mux.m_state == GsmMux::DlciClosed)
+    {
+    ESP_LOGD(TAG, "tx scmd ch=0 len=%-4d: %s", size, data);
+    tx((uint8_t*)data, size);
+    return true;
+    }
+  else if (m_mux.IsChannelOpen(GSM_MUX_CHAN_CMD))
+    {
+    ESP_LOGD(TAG, "tx mcmd ch=%d len=%-4d: %s", GSM_MUX_CHAN_CMD, size, data);
+    m_mux.tx(GSM_MUX_CHAN_CMD, (uint8_t*)data, size);
+    return true;
+    }
+  else
+    return false;
   }
 
 void simcom_tx(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc, const char* const* argv)
@@ -806,6 +919,28 @@ void simcom_muxtx(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc,
   MyPeripherals->m_simcom->muxtx(channel,msg.c_str(),msg.length());
   }
 
+void simcom_cmd(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc, const char* const* argv)
+  {
+  std::string msg;
+  for (int k=0; k<argc; k++)
+    {
+    if (k>0)
+      {
+      msg.append(" ");
+      }
+    msg.append(argv[k]);
+    }
+  msg.append("\r\n");
+  bool sent = MyPeripherals->m_simcom->txcmd(msg.c_str(),msg.length());
+  if (verbosity >= COMMAND_RESULT_MINIMAL)
+    {
+    if (sent)
+      writer->puts("SIMCOM command has been sent.");
+    else
+      writer->puts("ERROR: SIMCOM command channel not available!");
+    }
+  }
+
 void simcom_status(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc, const char* const* argv)
   {
   writer->printf("SIMCOM\n  Network Registration: %s\n  State: %s\n  Ticker: %d\n  User Data: %d\n",
@@ -837,6 +972,14 @@ void simcom_status(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc
   writer->printf("  PPP Last Error: %s\n",
     MyPeripherals->m_simcom->m_ppp.ErrCodeName(MyPeripherals->m_simcom->m_ppp.m_lasterrcode));
 
+  writer->printf("  GPS: %s%s\n",
+    MyConfig.GetParamValueBool("modem", "enable.gps", false) ? "enabled" : "disabled",
+    MyPeripherals->m_simcom->m_gps_required ? ", required" : "");
+
+  writer->printf("  GPS time: %s%s\n",
+    MyConfig.GetParamValueBool("modem", "enable.gpstime", false) ? "enabled" : "disabled",
+    MyPeripherals->m_simcom->m_nmea.m_gpstime_required ? ", required" : "");
+
   if (MyPeripherals->m_simcom->m_nmea.m_connected)
     {
     writer->printf("  NMEA (GPS/GLONASS) Connected on channel: #%d\n",
@@ -846,9 +989,6 @@ void simcom_status(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc
     {
     writer->puts("  NMEA (GPS/GLONASS) Not Connected");
     }
-
-  writer->printf("  GPS time: %s\n",
-    MyPeripherals->m_simcom->m_nmea.m_gpstime_enabled ? "enabled" : "disabled");
 
   }
 
@@ -912,6 +1052,7 @@ SimcomInit::SimcomInit()
   cmd_simcom->RegisterCommand("tx","Transmit data on SIMCOM",simcom_tx, "", 1);
   cmd_simcom->RegisterCommand("muxtx","Transmit data on SIMCOM MUX",simcom_muxtx, "<chan> <data>", 2);
   cmd_simcom->RegisterCommand("status","Show SIMCOM status",simcom_status, "", 0);
+  cmd_simcom->RegisterCommand("cmd","Send SIMCOM AT command",simcom_cmd, "<command>", 1);
 
   OvmsCommand* cmd_setstate = cmd_simcom->RegisterCommand("setstate","SIMCOM state change framework",NULL, "", 1);
   for (int x = simcom::CheckPowerOff; x<simcom::PoweredOff; x++)

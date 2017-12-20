@@ -33,6 +33,7 @@ static const char *TAG = "ovms-server-v2";
 
 #include "ovms.h"
 #include "buffered_shell.h"
+#include "ovms_peripherals.h"
 #include "ovms_command.h"
 #include "ovms_config.h"
 #include "metrics_standard.h"
@@ -196,6 +197,8 @@ void OvmsServerV2::ServerTask()
     m_units_distance = Kilometers;
 
   int lasttx = 0;
+  int lasttx_stream = 0;
+  int peers = 0;
   MAINLOOP: while(1)
     {
     if (!MyNetManager.m_connected_any)
@@ -240,9 +243,9 @@ void OvmsServerV2::ServerTask()
       // Handle incoming requests
       while ((m_buffer->HasLine() >= 0)&&(m_conn.IsOpen()))
         {
-        int peers = StandardMetrics.ms_s_v2_peers->AsInt();
+        peers = StandardMetrics.ms_s_v2_peers->AsInt();
         ProcessServerMsg();
-        if ((StandardMetrics.ms_s_v2_peers->AsInt() != peers)&&(peers==0))
+        if (StandardMetrics.ms_s_v2_peers->AsInt() > peers)
           {
           ESP_LOGI(TAG, "One or more peers have connected");
           lasttx = 0; // A peer has connected, so force a transmission of status messages
@@ -250,8 +253,10 @@ void OvmsServerV2::ServerTask()
         }
 
       // Periodic transmission of metrics
+      peers = StandardMetrics.ms_s_v2_peers->AsInt();
+      bool caron = StandardMetrics.ms_v_env_on->AsBool();
       int now = StandardMetrics.ms_m_monotonic->AsInt();
-      int next = (StandardMetrics.ms_s_v2_peers->AsInt()==0)?600:60;
+      int next = (peers==0) ? 600 : 60;
       if ((lasttx==0)||(now>(lasttx+next)))
         {
         TransmitMsgStat(true);          // Send always, periodically
@@ -261,7 +266,12 @@ void OvmsServerV2::ServerTask()
         TransmitMsgTPMS(lasttx==0);
         TransmitMsgFirmware(lasttx==0);
         TransmitMsgCapabilities(lasttx==0);
-        lasttx = now;
+        lasttx = lasttx_stream = now;
+        }
+      else if (m_streaming && caron && peers && now > lasttx_stream+m_streaming)
+        {
+        TransmitMsgGPS();
+        lasttx_stream = now;
         }
 
       if (m_now_stat) TransmitMsgStat();
@@ -347,18 +357,34 @@ void OvmsServerV2::ProcessCommand(const char* payload)
   {
   int command = atoi(payload);
   char *sep = index(payload,',');
-  int k;
+  int k = 0;
 
   OvmsVehicle* vehicle = MyVehicleFactory.ActiveVehicle();
 
   std::ostringstream* buffer = new std::ostringstream();
-  switch (command)
+
+  if (vehicle)
+    {
+    // Ask vehicle to process command first:
+    std::string rt;
+    OvmsVehicle::vehicle_command_t vc = vehicle->ProcessMsgCommand(rt, command, sep ? sep+1 : NULL);
+    if (vc != OvmsVehicle::NotImplemented)
+      {
+      *buffer << "MP-0 c" << command << "," << (1-vc) << "," << rt;
+      k = 1;
+      }
+    }
+
+  if (!k) switch (command)
     {
     case 1: // Request feature list
+      // Notes:
+      // - V2 only supported integer values, V3 values may be text
+      // - V2 only supported 16 features, V3 supports 32
       {
-      for (k=0;k<16;k++)
+      for (k=0;k<32;k++)
         {
-        *buffer << "MP-0 c1,0," << k << ",16,0";
+        *buffer << "MP-0 c1,0," << k << ",32," << (vehicle ? vehicle->GetFeature(k) : "0");
         Transmit(*buffer);
         buffer->str("");
         buffer->clear();
@@ -367,7 +393,22 @@ void OvmsServerV2::ProcessCommand(const char* payload)
       }
     case 2: // Set feature
       {
-      *buffer << "MP-0 c2,1";
+      int rc = 1;
+      const char* rt = "";
+      if (!vehicle)
+        rt = "No active vehicle";
+      else if (!sep)
+        rt = "Missing feature key";
+      else
+        {
+        k = atoi(sep+1);
+        sep = index(sep+1,',');
+        if (vehicle->SetFeature(k, sep ? sep+1 : ""))
+          rc = 0;
+        else
+          rt = "Feature not supported by vehicle";
+        }
+      *buffer << "MP-0 c2," << rc << "," << rt;
       break;
       }
     case 3: // Request parameter list
@@ -387,16 +428,23 @@ void OvmsServerV2::ProcessCommand(const char* payload)
       }
     case 4: // Set parameter
       {
-      if (sep)
+      int rc = 1;
+      const char* rt = "";
+      if (!sep)
+        rt = "Missing parameter key";
+      else
         {
-        k = atoi(sep);
+        k = atoi(sep+1);
         if ((k<PMAX_MAX)&&(pmap[k].param[0] != 0))
           {
           sep = index(sep+1,',');
-          MyConfig.SetParamValue(pmap[k].param, pmap[k].instance, sep+1);
+          MyConfig.SetParamValue(pmap[k].param, pmap[k].instance, sep ? sep+1 : "");
+          rc = 0;
           }
+        else
+          rt = "Parameter key not supported";
         }
-      *buffer << "MP-0 c4,0";
+      *buffer << "MP-0 c4," << rc << "," << rt;
       break;
       }
     case 5: // Reboot
@@ -563,8 +611,25 @@ void OvmsServerV2::ProcessCommand(const char* payload)
       break;
       }
     case 40: // Send SMS
+      *buffer << "MP-0 c" << command << ",2";
+      break;
     case 41: // Send MMI/USSD codes
+      if (!sep)
+        *buffer << "MP-0 c" << command << ",1,No command";
+      else
+        {
+        *buffer << "AT+CUSD=1,\"" << sep+1 << "\",15\r\n";
+        std::string msg = buffer->str();
+        buffer->str("");
+        if (MyPeripherals->m_simcom->txcmd(msg.c_str(), msg.length()))
+          *buffer << "MP-0 c" << command << ",0";
+        else
+          *buffer << "MP-0 c" << command << ",1,Cannot send command";
+        }
+      break;
     case 49: // Send raw AT command
+      *buffer << "MP-0 c" << command << ",2";
+      break;
     default:
       *buffer << "MP-0 c" << command << ",2";
       break;
@@ -581,7 +646,7 @@ void OvmsServerV2::Transmit(const std::ostringstream& message)
   if (len==0) return;
 
   char* s = new char[len+1];
-  strncpy(s,bp,len);
+  strncpy(s,bp,len+1);
   ESP_LOGI(TAG, "Send %s",s);
 
   RC4_crypt(&m_crypto_tx1, &m_crypto_tx2, (uint8_t*)s, len);
@@ -1318,20 +1383,51 @@ void OvmsServerV2::HandleNotifyDataAck(uint32_t ack)
 
 void OvmsServerV2::MetricModified(OvmsMetric* metric)
   {
-  // A metric has been changed...
+  // A metric has been changed: if peers are connected,
+  //  check for important changes that should be transmitted ASAP:
+
+  if (StandardMetrics.ms_s_v2_peers->AsInt() == 0)
+    return;
 
   if ((metric == StandardMetrics.ms_v_charge_climit)||
       (metric == StandardMetrics.ms_v_charge_state)||
       (metric == StandardMetrics.ms_v_charge_substate)||
       (metric == StandardMetrics.ms_v_charge_mode)||
-      (metric == StandardMetrics.ms_v_bat_cac))
+      (metric == StandardMetrics.ms_v_charge_inprogress)||
+      (metric == StandardMetrics.ms_v_env_cooling)||
+      (metric == StandardMetrics.ms_v_bat_cac)||
+      (metric == StandardMetrics.ms_v_bat_soh))
     {
-    m_now_environment = true;
     m_now_stat = true;
     }
 
-  if (StandardMetrics.ms_s_v2_peers->AsInt() > 0)
-    m_now_environment = true; // Transmit environment message if necessary
+  if ((metric == StandardMetrics.ms_v_door_fl)||
+      (metric == StandardMetrics.ms_v_door_fr)||
+      (metric == StandardMetrics.ms_v_door_chargeport)||
+      (metric == StandardMetrics.ms_v_charge_pilot)||
+      (metric == StandardMetrics.ms_v_charge_inprogress)||
+      (metric == StandardMetrics.ms_v_env_handbrake)||
+      (metric == StandardMetrics.ms_v_env_on)||
+      (metric == StandardMetrics.ms_v_env_locked)||
+      (metric == StandardMetrics.ms_v_env_valet)||
+      (metric == StandardMetrics.ms_v_door_hood)||
+      (metric == StandardMetrics.ms_v_door_trunk)||
+      (metric == StandardMetrics.ms_v_env_awake)||
+      (metric == StandardMetrics.ms_v_env_cooling)||
+      (metric == StandardMetrics.ms_v_env_alarm)||
+      (metric == StandardMetrics.ms_v_door_rl)||
+      (metric == StandardMetrics.ms_v_door_rr)||
+      (metric == StandardMetrics.ms_v_env_charging12v)||
+      (metric == StandardMetrics.ms_v_env_hvac))
+    {
+    m_now_environment = true;
+    }
+
+  if ((metric == StandardMetrics.ms_v_env_drivemode)||
+      (metric == StandardMetrics.ms_v_pos_gpslock))
+    {
+    m_now_gps = true;
+    }
   }
 
 bool OvmsServerV2::IncomingNotification(OvmsNotifyType* type, OvmsNotifyEntry* entry)
@@ -1393,13 +1489,30 @@ bool OvmsServerV2::IncomingNotification(OvmsNotifyType* type, OvmsNotifyEntry* e
 
 /**
  * EventListener:
- *  - update location ASAP
  */
 void OvmsServerV2::EventListener(std::string event, void* data)
-{
-  if (event == "gps.lock.acquired")
-    m_now_gps = true;
-}
+  {
+  if (event == "system.modem.received.ussd")
+    {
+    // forward USSD response to server:
+    std::string buf = "MP-0 c41,0,";
+    buf.append(mp_encode((char*) data));
+    Transmit(buf);
+    }
+  else if (event == "config.changed" || event == "config.mounted")
+    {
+    ConfigChanged((OvmsConfigParam*) data);
+    }
+  }
+
+/**
+ * ConfigChanged: read new configuration
+ *  - param: NULL = read all configurations
+ */
+void OvmsServerV2::ConfigChanged(OvmsConfigParam* param)
+  {
+  m_streaming = MyConfig.GetParamValueInt("vehicle", "stream", 0);
+  }
 
 void OvmsServerV2::TransmitMsgCapabilities(bool always)
   {
@@ -1434,6 +1547,7 @@ OvmsServerV2::OvmsServerV2(const char* name)
   m_now_environment = false;
   m_now_capabilities = false;
   m_now_group = false;
+  m_streaming = 0;
 
   m_pending_notify_info = false;
   m_pending_notify_error = false;
@@ -1452,7 +1566,12 @@ OvmsServerV2::OvmsServerV2(const char* name)
     }
 
   // init event listener:
-  MyEvents.RegisterEvent(TAG, "gps.lock.acquired", std::bind(&OvmsServerV2::EventListener, this, _1, _2));
+  MyEvents.RegisterEvent(TAG, "system.modem.received.ussd", std::bind(&OvmsServerV2::EventListener, this, _1, _2));
+  MyEvents.RegisterEvent(TAG, "config.changed", std::bind(&OvmsServerV2::EventListener, this, _1, _2));
+  MyEvents.RegisterEvent(TAG, "config.mounted", std::bind(&OvmsServerV2::EventListener, this, _1, _2));
+  
+  // read config:
+  ConfigChanged(NULL);
   }
 
 OvmsServerV2::~OvmsServerV2()

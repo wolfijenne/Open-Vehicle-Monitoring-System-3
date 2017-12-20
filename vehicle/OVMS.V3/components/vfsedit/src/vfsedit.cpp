@@ -27,34 +27,45 @@
 ; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 ; THE SOFTWARE.
 */
-#ifndef __OVMS_SHELL_H__
-#define __OVMS_SHELL_H__
 
-#include "ovms_command.h"
-#include "microrl.h"
+#include "vfsedit.h"
+#include "openemacs.h"
 
-#define TOKEN_MAX_LENGTH 32
-#define COMPLETION_MAX_TOKENS 20
-
-class OvmsShell : public OvmsWriter
+size_t vfs_edit_write(struct editor_state* E, const char *buf, size_t nbyte)
   {
-  public:
-    OvmsShell(int verbosity = COMMAND_RESULT_MINIMAL);
+  OvmsWriter* writer = (OvmsWriter*)E->editor_userdata;
 
-  public:
-    void Initialize(bool print);
-    void ProcessChar(char c);
-    void ProcessChars(const char* buf, int len);
-    void PrintConditional(const char* buf);
+  return writer->write(buf,nbyte);
+  }
 
-  protected:
-    virtual void finalise() {}
+bool vfs_edit_insert(OvmsWriter* writer, void* ctx, char ch)
+  {
+  struct editor_state* ed = (struct editor_state*)ctx;
 
-  protected:
-    microrl_t m_rl;
+  editor_process_keypress(ed, ch);
+  if (ed->editor_completed)
+    {
+    editor_free(ed);
+    free(ed);
+    return false;
+    }
+  else
+    {
+    return true;
+    }
+  }
 
-  public:
-    int m_verbosity;
-  };
+void vfs_edit(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc, const char* const* argv)
+  {
+  if (MyConfig.ProtectedPath(argv[0]))
+    {
+    writer->puts("Error: protected path");
+    return;
+    }
 
-#endif //#ifndef __OVMS_SHELL_H__
+  struct editor_state* ed = (struct editor_state*)malloc(sizeof(struct editor_state));
+  editor_init(ed,vfs_edit_write,(void*)writer);
+  editor_open(ed,argv[0]);
+
+  writer->RegisterInsertCallback(vfs_edit_insert, ed);
+  }
