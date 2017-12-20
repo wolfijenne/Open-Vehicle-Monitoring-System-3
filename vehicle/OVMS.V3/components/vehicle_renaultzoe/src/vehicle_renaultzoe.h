@@ -68,14 +68,25 @@ bool IsPasswordOk(const char *password);
 void SetChargeMetrics(float voltage, float current, float climit, bool chademo);
 
 // Kia Soul EV specific metrics
-OvmsMetricString* m_version;
 OvmsMetricFloat*  m_b_cell_volt_max;           // Battery cell maximum voltage
 OvmsMetricFloat*  m_b_cell_volt_min;           // Battery cell minimum voltage
 OvmsMetricFloat*  m_b_cell_det_max;               // Battery cell maximum detoriation
 OvmsMetricFloat*  m_b_cell_det_min;               // Battery cell minimum detoriation
 OvmsMetricFloat*  m_b_bat_avail_energy;               // Battery available kWh
-OvmsMetricFloat*  ms_v_bat_max_charge_power;    // Max Bat Charge
-OvmsMetricFloat*  m_c_power;                            // Available charge power
+OvmsMetricFloat*  m_b_bat_max_charge_power;    // Max Bat Charge
+OvmsMetricFloat*  m_mains_power;                // Mains Power Consumed
+OvmsMetricInt* m_b_temp1;
+OvmsMetricInt* m_b_temp2;
+OvmsMetricInt* m_b_temp3;
+OvmsMetricInt* m_b_temp4;
+OvmsMetricInt* m_b_temp5;
+OvmsMetricInt* m_b_temp6;
+OvmsMetricInt* m_b_temp7;
+OvmsMetricInt* m_b_temp8;
+OvmsMetricInt* m_b_temp9;
+OvmsMetricInt* m_b_temp10;
+OvmsMetricInt* m_b_temp11;
+OvmsMetricInt* m_b_temp12;
 //float rz_battery_max_detoriation;                 //02 21 05 -> 24 1+2
 //float rz_battery_min_detoriation;                 //02 21 05 -> 24 4+5
 
@@ -99,6 +110,7 @@ float rz_bat_power;
 int8_t rz_battery_module_temp[12];
 
 INT rz_battery_current;                                 //Battery current               02 21 01 -> 21 7+22 1
+INT rz_charge_state_local;
 
 uint32_t rz_battery_cum_charge_current;         //Cumulated charge current    02 21 01 -> 24 6+7 & 25 1+2
 uint32_t rz_battery_cum_discharge_current;    //Cumulated discharge current 02 21 01 -> 25 3-6
@@ -145,7 +157,6 @@ const TickType_t xDelay = 50 / portTICK_PERIOD_MS;
 // CAN buffer access macros: b=byte# 0..7 / n=nibble# 0..15
 #define CAN_BYTE(b)     data[b]
 #define CAN_UINT(b)     (((UINT)CAN_BYTE(b) << 8) | CAN_BYTE(b+1))
-// #define CAN_7NIBL(b)    (((UINT)CAN_BYTE((int)b/8) << 8) | (CAN_BYTE(((int)b/8)+1)) >> (b-(int)b/8))
 #define CAN_UINT24(b)   (((uint32_t)CAN_BYTE(b) << 16) | ((UINT)CAN_BYTE(b+1) << 8) | CAN_BYTE(b+2))
 #define CAN_UINT32(b)   (((uint32_t)CAN_BYTE(b) << 24) | ((uint32_t)CAN_BYTE(b+1) << 16)  | ((UINT)CAN_BYTE(b+2) << 8) | CAN_BYTE(b+3))
 #define CAN_NIBL(b)     (can_databuffer[b] & 0x0f)
@@ -177,15 +188,13 @@ const TickType_t xDelay = 50 / portTICK_PERIOD_MS;
 #define TPMS_RL_P          StdMetrics.ms_v_tpms_rl_p->AsFloat(100);
 
 #define BAT_SOH            StdMetrics.ms_v_bat_soh->AsFloat(100)
-#define LIMIT_SOC        StdMetrics.ms_v_charge_limit_soc->AsFloat(0)
-#define LIMIT_RANGE        StdMetrics.ms_v_charge_limit_range->AsFloat(0, Kilometers)
-#define EST_RANGE        StdMetrics.ms_v_bat_range_est->AsFloat(100, Kilometers)
-#define IDEAL_RANGE        StdMetrics.ms_v_bat_range_ideal->AsFloat(100, Kilometers)
-#define FULL_RANGE        StdMetrics.ms_v_bat_range_full->AsFloat(160, Kilometers)
+#define LIMIT_SOC          StdMetrics.ms_v_charge_limit_soc->AsFloat(0)
+#define CHARGE_KWH         StdMetrics.ms_v_charge_kwh->AsFloat(0)
 #define POS_ODO            StdMetrics.ms_v_pos_odometer->AsFloat(0, Kilometers)
-#define CHARGE_CURRENT    StdMetrics.ms_v_charge_current->AsFloat(0, Amps)
-#define CHARGE_VOLTAGE    StdMetrics.ms_v_charge_voltage->AsFloat(0, Volts)
-#define SET_CHARGE_STATE(n)        StdMetrics.ms_v_charge_state->SetValue(n)
+#define CHARGE_CURRENT     StdMetrics.ms_v_charge_current->AsFloat(0, Amps)
+#define CHARGE_VOLTAGE     StdMetrics.ms_v_charge_voltage->AsFloat(0, Volts)
+#define SET_CHARGE_STATE(n)   StdMetrics.ms_v_charge_state->SetValue(n)
+#define CHARGE_DURATION_FULL  StdMetrics.ms_v_charge_duration_full->AsInt(100)
 
 #define VEHICLE_POLL_TYPE_OBDII_IOCTRL_BY_ID 0x2F // InputOutputControlByIdentifier
 

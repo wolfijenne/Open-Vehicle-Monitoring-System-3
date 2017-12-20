@@ -71,7 +71,7 @@ static const OvmsVehicle::poll_pid_t vehicle_renaultzoe_polls[] =
 { 0x792, 0x793, VEHICLE_POLL_TYPE_OBDIIEXTENDED, 0x504A, {  10, 10,  10 } },  // Mains active Power consumed
 { 0x792, 0x793, VEHICLE_POLL_TYPE_OBDIIEXTENDED, 0x5063, {  10, 10,  10 } },  // Charging State
 // { 0x792, 0x793, VEHICLE_POLL_TYPE_OBDIIEXTENDED, 0x5062, {  10, 10,  10 } },  // Ground Resistance
-// { 0x7ba, 0x7bb, VEHICLE_POLL_TYPE_OBDIIGROUP, 0x2104, {  10, 10,  10 } },  // Temp Bat Module 1
+{ 0x79b, 0x7bb, VEHICLE_POLL_TYPE_OBDIIGROUP, 0x04, {  10, 10,  10 } },  // Temp Bat Module 1
 // -END-
 { 0, 0, 0x00, 0x00, { 0, 0, 0 } }
 
@@ -83,11 +83,9 @@ OvmsVehicleRenaultZoe::OvmsVehicleRenaultZoe()
   ESP_LOGI(TAG, "Renault Zoe vehicle module");
       StdMetrics.ms_v_bat_soc->SetValue(50.5);
       StdMetrics.ms_v_bat_12v_current->SetValue(-99);
-      StdMetrics.ms_v_bat_range_est->SetValue(-99);
-      StdMetrics.ms_v_bat_cac->SetValue(-99);
+      StdMetrics.ms_v_bat_range_est->SetValue(0);
+//      StdMetrics.ms_v_bat_cac->SetValue(-99);
       StdMetrics.ms_v_bat_current->SetValue(-99);
-      StdMetrics.ms_v_bat_energy_recd->SetValue(-99);
-      StdMetrics.ms_v_bat_energy_used->SetValue(-99);
       StdMetrics.ms_v_bat_power->SetValue(-99);
 
       memset( m_vin, 0, sizeof(m_vin));
@@ -125,10 +123,23 @@ OvmsVehicleRenaultZoe::OvmsVehicleRenaultZoe()
       ConfigChanged(NULL);
       
       // init metrics:
-      m_version = MyMetrics.InitString("x.rz.m.version", 0, VERSION " " __DATE__ " " __TIME__);
       m_b_cell_volt_max = MyMetrics.InitFloat("x.rz.m.b.cell.volt.max", 10, 0, Volts);
       m_b_cell_volt_min = MyMetrics.InitFloat("x.rz.m.b.cell.volt.min", 10, 0, Volts);
-      m_c_power = MyMetrics.InitFloat("x.rz.m.c.power", 10, 0, kW);
+      m_b_bat_avail_energy = MyMetrics.InitFloat("x.rz.m.b.bat.avail.energy", 10, 0, kWh);
+      m_b_bat_max_charge_power = MyMetrics.InitFloat("x.rz.m.b.bat.max.charge.power", 10, 0, kW);
+      m_mains_power = MyMetrics.InitFloat("x.rz.m.mains.power",10,0, kW);
+      m_b_temp1 = MyMetrics.InitInt("x.rz.m.bat.t1",10,0, Celcius);
+      m_b_temp2 = MyMetrics.InitInt("x.rz.m.bat.t2",10,0, Celcius);
+      m_b_temp3 = MyMetrics.InitInt("x.rz.m.bat.t3",10,0, Celcius);
+      m_b_temp4 = MyMetrics.InitInt("x.rz.m.bat.t4",10,0, Celcius);
+      m_b_temp5 = MyMetrics.InitInt("x.rz.m.bat.t5",10,0, Celcius);
+      m_b_temp6 = MyMetrics.InitInt("x.rz.m.bat.t6",10,0, Celcius);
+      m_b_temp7 = MyMetrics.InitInt("x.rz.m.bat.t7",10,0, Celcius);
+      m_b_temp8 = MyMetrics.InitInt("x.rz.m.bat.t8",10,0, Celcius);
+      m_b_temp9 = MyMetrics.InitInt("x.rz.m.bat.t9",10,0, Celcius);
+      m_b_temp10 = MyMetrics.InitInt("x.rz.m.bat.t10",10,0, Celcius);
+      m_b_temp11 = MyMetrics.InitInt("x.rz.m.bat.t11",10,0, Celcius);
+      m_b_temp12 = MyMetrics.InitInt("x.rz.m.bat.t12",10,0, Celcius);
       
       
       PollSetPidList(m_can1,vehicle_renaultzoe_polls);
@@ -231,9 +242,9 @@ void OvmsVehicleRenaultZoe::IncomingFrameCan1(CAN_frame_t* p_frame)
             // 42e,20,24,5,0,0,%,,,e2\n"  Engine Fan Speed
             // 42e,38,43,1,0,1,A,,,e3\n"  Charging Pilot Current
             // 42e,44,50,1,40,0,°C,,,e3\n"  HV Battery Temp
-            StdMetrics.ms_v_bat_temp->SetValue((float(CAN_7NIBL(45))-40));
+//            StdMetrics.ms_v_bat_temp->SetValue((float(CAN_7NIBL(45))-40));
             // 42e,56,63,0.3,0,1,kW,,,ff\n"  Max Charge Power
-            ms_v_bat_max_charge_power->SetValue((float(d[8])*0.3));
+            m_b_bat_max_charge_power->SetValue((float(d[7])*0.3));
         }
             break;
         case 0x430:
@@ -261,6 +272,7 @@ void OvmsVehicleRenaultZoe::IncomingFrameCan1(CAN_frame_t* p_frame)
             // 654,2,2,1,0,0,,,,ff\n" // Charging Plug Connected
             // 654,25,31,1,0,0,,,,ff\n" // State of Charge
             // 654,32,41,1,0,0,min,,,ff\n" // Time to Full
+            StdMetrics.ms_v_charge_duration_full->SetValue((((UINT)d[4] << 8) | d[5]) & 1023);
             // 654,42,51,1,0,0,km,,,ff\n" // Available Distance
         }
             break;
@@ -352,16 +364,44 @@ void OvmsVehicleRenaultZoe::IncomingPollReply(canbus* bus, uint16_t type, uint16
                     rz_bat_current = (float(CAN_UINT(0))-32768) * 25/100;
                 }
                     break;
+                case 0x33dc: {
+                    // 7ec,24,47,0.001,1,0,kWh,2233dc,6233dc,ff\n" // Consumed domestic energy
+                    StdMetrics.ms_v_charge_kwh->SetValue(CAN_UINT24(0)*0.001);
+                }
+                    break;
             }
             break;
         case 0x7bb:
             switch (pid) {
-                case 0x2104:
+                case 0x01:
                 {
                     // Todo
-                    // bb,336,351,0.01,0,2,kW,2101,6101,e2\n" // Maximum battery input power
+                    // 7bb,336,351,0.01,0,2,kW,2101,6101,e2\n" // Maximum battery input power
+                }
+                    break;
+                case 0x03:
+                {
+                    // Todo
                     // 7bb,56,71,10,0,0,°C,2103,6103,5\n" // Mean battery compartment temp
+                    // 7bb,96,111,.01,0,0,V,2103,6103,ff,21_03_#13_Maximum_Cell_voltage\n" //
+                    // 7bb,112,127,.01,0,0,V,2103,6103,ff,21_03_#15_Minimum_Cell_voltage\n" //
                     // 7bb,192,207,0.01,0,2,%,2103,6103,e2\n" // Real State of Charge
+//                    if (type == VEHICLE_POLL_TYPE_OBDIIGROUP)
+//                    {
+//                        if (m_poll_ml_frame == 1)
+//                        {
+//                            m_b_cell_volt_max->SetValue(float( CAN_BYTE(6)*0.01 ),Volts);
+//                        }
+//                        else if (m_poll_ml_frame == 2)
+//                        {
+//                            m_b_cell_volt_min->SetValue(float( CAN_BYTE(1)*0.01 ),Volts);
+//                        }
+//                    }
+                }
+                    break;
+                case 0x04:
+                {
+                    // Todo
                     // 7bb,32,39,1,40,0,°C,2104,6104,e2\n" // Cell 1 Temperature
                     // 7bb,56,63,1,40,0,°C,2104,6104,e2\n" // Cell 2 Temperature
                     // 7bb,80,87,1,40,0,°C,2104,6104,e2\n" // Cell 3 Temperature
@@ -374,13 +414,48 @@ void OvmsVehicleRenaultZoe::IncomingPollReply(canbus* bus, uint16_t type, uint16
                     // 7bb,248,255,1,40,0,°C,2104,6104,e2\n" // Cell 10 Temperature
                     // 7bb,272,279,1,40,0,°C,2104,6104,e2\n" // Cell 11 Temperature
                     // 7bb,296,303,1,40,0,°C,2104,6104,e2\n" // Cell 12 Temperature
-                    // 7bb,32,47,.01,0,0,%,2103,6103,ff,21_03#05 Battery SOC of cell lowest voltage\n"
-                    // 7bb,48,63,.01,0,0,%,2103,6103,ff,21_03#07 Battery SOC of cell highest voltage\n"
+                    if (type == VEHICLE_POLL_TYPE_OBDIIGROUP)
+                    {
+                        if (m_poll_ml_frame == 0)
+                        {
+                            rz_battery_module_temp[0]=( (INT)CAN_BYTE(1)-40 );
+                        }
+                        else if (m_poll_ml_frame == 1)
+                        {
+                            rz_battery_module_temp[1]=( (INT)CAN_BYTE(1)-40 );
+                            rz_battery_module_temp[2]=( (INT)CAN_BYTE(4)-40 );
+                        }
+                        else if (m_poll_ml_frame == 2)
+                        {
+                            rz_battery_module_temp[3]=( (INT)CAN_BYTE(0)-40 );
+                            rz_battery_module_temp[4]=( (INT)CAN_BYTE(3)-40 );
+                            rz_battery_module_temp[5]=( (INT)CAN_BYTE(6)-40 );
+                        }
+                        else if (m_poll_ml_frame == 3)
+                        {
+                            rz_battery_module_temp[6]=( (INT)CAN_BYTE(2)-40 );
+                            rz_battery_module_temp[7]=( (INT)CAN_BYTE(5)-40 );
+                        }
+                        else if (m_poll_ml_frame == 4)
+                        {
+                            rz_battery_module_temp[8]=( (INT)CAN_BYTE(1)-40 );
+                            rz_battery_module_temp[9]=( (INT)CAN_BYTE(4)-40 );
+                        }
+                        else if (m_poll_ml_frame == 5)
+                        {
+                            rz_battery_module_temp[10]=( (INT)CAN_BYTE(0)-40 );
+                            rz_battery_module_temp[11]=( (INT)CAN_BYTE(3)-40 );
+                        }
+                        int sum=0;
+                        for (int i=0; i<12; i++) {
+                            sum+=rz_battery_module_temp[i];
+                        }
+                        StdMetrics.ms_v_bat_temp->SetValue(float(sum)/12); // Calculate Mean Value
+                    }
                 }
                     break;
             }
             break;
-            
         case 0x77e:
             switch (pid) {
                     //            case 0x3018:
@@ -398,20 +473,51 @@ void OvmsVehicleRenaultZoe::IncomingPollReply(canbus* bus, uint16_t type, uint16
             switch (pid) {
                 case 0x504A: {
                     // 793,24,39,1,20000,0,W,22504A,62504A,ff\n" // Mains active power consumed
-
+                    m_mains_power->SetValue((float(CAN_UINT(0)-20000)/1000),kW);
                 }
                     break;
                 case 0x5063: {
                     // 793,24,31,1,0,0,,225063,625063,ff\n"
                     // Supervisor state,0:Init;1:Wait;2:ClosingS2;3:InitType;4:InitLkg;5:InitChg;6:Charge;7:ZeroAmpMode;8:EndOfChg;9:OpeningS2;10:ReadyToSleep;11:EmergencyStop;12:InitChargeDF;13:OCPStop;14:WaitS2
-
+                    rz_charge_state_local=CAN_BYTE(0);
+                    m_b_temp1->SetValue((INT)rz_charge_state_local);
+                    if (rz_charge_state_local==0) {          // Init,Wait,ClosingS2,InitType,InitLkg,InitChg
+                        SET_CHARGE_STATE("prepare");
+                    } else if (rz_charge_state_local==1) {  // Charge
+                        SET_CHARGE_STATE("stopped");
+                    } else if (rz_charge_state_local==2) {  // Charge
+                        SET_CHARGE_STATE("prepare");
+                    } else if (rz_charge_state_local==3) {  // Charge
+                        SET_CHARGE_STATE("prepare");
+                    } else if (rz_charge_state_local==4) {  // Charge
+                        SET_CHARGE_STATE("prepare");
+                    } else if (rz_charge_state_local==5) {  // Charge
+                        SET_CHARGE_STATE("prepare");
+                    } else if (rz_charge_state_local==6) {  // Charge
+                        SET_CHARGE_STATE("charging");
+                    } else if (rz_charge_state_local==7) {  // ZeroAmpMode
+                        SET_CHARGE_STATE("topoff");
+                    } else if (rz_charge_state_local==8) {  // EndOfChg
+                        SET_CHARGE_STATE("done");
+                    } else if (rz_charge_state_local==9) {  // OpeningS2
+                        SET_CHARGE_STATE("prepare");
+                    } else if (rz_charge_state_local==10) { // ReadyToSleep
+                        SET_CHARGE_STATE("stopped");
+                    } else if (rz_charge_state_local==11) { //EmergencyStopp
+                        SET_CHARGE_STATE("stopped");
+                    } else if (rz_charge_state_local==12) { //InitChargeDF
+                        SET_CHARGE_STATE("prepare");
+                    } else if (rz_charge_state_local==13) { //OCPStop
+                        SET_CHARGE_STATE("stopped");
+                    } else if (rz_charge_state_local==14) { //WaitS2
+                        SET_CHARGE_STATE("prepare");
+                    }
                 }
                     break;
             }
             break;
     }
 }
-
 /**
  * Ticker1: Called every second
  */
@@ -420,14 +526,13 @@ void OvmsVehicleRenaultZoe::Ticker1(uint32_t ticker)
     StdMetrics.ms_v_bat_voltage->SetValue( rz_bat_voltage );
     StdMetrics.ms_v_bat_current->SetValue( rz_bat_current );
     StdMetrics.ms_v_bat_power->SetValue(rz_bat_voltage * rz_bat_current/1000);
-    if (StdMetrics.ms_v_bat_12v_voltage->AsFloat() > 13.2) {
+    if (StdMetrics.ms_v_bat_12v_voltage->AsFloat() > 13.5) {
         vehicle_renaultzoe_car_on(true);
     } else {
         vehicle_renaultzoe_car_on(false);
     }
     
 }
-
 /**
  *  Sets the charge metrics
  */
