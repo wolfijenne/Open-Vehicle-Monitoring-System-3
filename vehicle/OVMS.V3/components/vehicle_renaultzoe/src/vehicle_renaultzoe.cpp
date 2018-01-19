@@ -72,6 +72,9 @@ static const OvmsVehicle::poll_pid_t vehicle_renaultzoe_polls[] =
 { 0x792, 0x793, VEHICLE_POLL_TYPE_OBDIIEXTENDED, 0x5063, {  10, 10,  10 } },  // Charging State
 // { 0x792, 0x793, VEHICLE_POLL_TYPE_OBDIIEXTENDED, 0x5062, {  10, 10,  10 } },  // Ground Resistance
 { 0x79b, 0x7bb, VEHICLE_POLL_TYPE_OBDIIGROUP, 0x04, {  10, 10,  10 } },  // Temp Bat Module 1
+//+"7bc,28,39,1,4094,0,N·m,224B7C,624B7C,ff,Electric brake wheels torque request\n" //
+    //+ "Uncoupled Braking Pedal,2197,V,7bc,79c,UBP,-,5902ff\n"
+{ 0x79c, 0x7bc, VEHICLE_POLL_TYPE_OBDIIGROUP, 0x04, {  120, 1,  120 } }, // Braking Pedal
 // -END-
 { 0, 0, 0x00, 0x00, { 0, 0, 0 } }
 
@@ -81,12 +84,13 @@ static const OvmsVehicle::poll_pid_t vehicle_renaultzoe_polls[] =
 OvmsVehicleRenaultZoe::OvmsVehicleRenaultZoe()
   {
   ESP_LOGI(TAG, "Renault Zoe vehicle module");
-      StdMetrics.ms_v_bat_soc->SetValue(50.5);
-      StdMetrics.ms_v_bat_12v_current->SetValue(-99);
+      StdMetrics.ms_v_bat_soc->SetValue(0);
+      StdMetrics.ms_v_bat_12v_current->SetValue(0);
       StdMetrics.ms_v_bat_range_est->SetValue(0);
-//      StdMetrics.ms_v_bat_cac->SetValue(-99);
-      StdMetrics.ms_v_bat_current->SetValue(-99);
-      StdMetrics.ms_v_bat_power->SetValue(-99);
+//      StdMetrics.ms_v_bat_cac->SetValue(0);
+      StdMetrics.ms_v_bat_current->SetValue(0);
+      StdMetrics.ms_v_bat_power->SetValue(0);
+      StdMetrics.ms_v_charge_pilot->SetValue(false);
 
       memset( m_vin, 0, sizeof(m_vin));
       memset( rz_battery_cell_voltage ,0, sizeof(rz_battery_cell_voltage));
@@ -108,7 +112,7 @@ OvmsVehicleRenaultZoe::OvmsVehicleRenaultZoe()
       rz_battery_max_temperature = 0;
       
       rz_heatsink_temperature = 0;
-      rz_battery_fan_feedback = 0;
+      rz_charge_pilot_current = 0;
       
       rz_send_can.id = 0;
       rz_send_can.status = 0;
@@ -127,7 +131,10 @@ OvmsVehicleRenaultZoe::OvmsVehicleRenaultZoe()
       m_b_cell_volt_min = MyMetrics.InitFloat("x.rz.m.b.cell.volt.min", 10, 0, Volts);
       m_b_bat_avail_energy = MyMetrics.InitFloat("x.rz.m.b.bat.avail.energy", 10, 0, kWh);
       m_b_bat_max_charge_power = MyMetrics.InitFloat("x.rz.m.b.bat.max.charge.power", 10, 0, kW);
+      m_v_hydraulic_brake_power = MyMetrics.InitFloat("x.rz.m.v.hydraulic.brake.power", 10, 0, kW);
       m_mains_power = MyMetrics.InitFloat("x.rz.m.mains.power",10,0, kW);
+      m_bat_heat_sink_temp = MyMetrics.InitFloat("x.rz.m.bat.heat.sink.temp",10,0,Celcius);
+      m_charge_pilot_current = MyMetrics.InitInt("x.rz.m.charge.pilot.current",10,0,Amps);
       m_b_temp1 = MyMetrics.InitInt("x.rz.m.bat.t1",10,0, Celcius);
       m_b_temp2 = MyMetrics.InitInt("x.rz.m.bat.t2",10,0, Celcius);
       m_b_temp3 = MyMetrics.InitInt("x.rz.m.bat.t3",10,0, Celcius);
@@ -214,9 +221,9 @@ void OvmsVehicleRenaultZoe::IncomingFrameCan1(CAN_frame_t* p_frame)
     //ESP_LOGI(TAG, "Renault Zoe IncomingFrameCan1");
 //    uint8_t *d = p_frame->data.u8;
     uint8_t *d = p_frame->data.u8;
-    #define CAN_7NIBL(b)    (((((UINT)d[(int)b/8] << 8) | (d[((int)b/8)+1])) >> (b-((int)b/8)*8)) & 127)
-    #define CAN_8NIBL(b)    (((((UINT)d[(int)b/8] << 8) | (d[((int)b/8)+1])) >> (b-((int)b/8)*8)) & 255)
-    #define CAN_9NIBL(b)    (((((UINT)d[(int)b/8] << 8) | (d[((int)b/8)+1])) >> (b-((int)b/8)*8)) & 511)
+#define CAN_7NIBL(b)    (((((UINT)d[(int)b/8] << 8) | (d[((int)b/8)+1])) >> (b-((int)b/8)*8)) & 127);
+#define CAN_8NIBL(b)    (((((UINT)d[(int)b/8] << 8) | (d[((int)b/8)+1])) >> (b-((int)b/8)*8)) & 255);
+#define CAN_9NIBL(b)    (((((UINT)d[(int)b/8] << 8) | (d[((int)b/8)+1])) >> (b-((int)b/8)*8)) & 511);
     switch (p_frame->MsgID)
     {
         case 0x1fd:
@@ -241,7 +248,14 @@ void OvmsVehicleRenaultZoe::IncomingFrameCan1(CAN_frame_t* p_frame)
             // 42e,0,12,0.02,0,2,%,,,e3\n"  State of Charge
             // 42e,20,24,5,0,0,%,,,e2\n"  Engine Fan Speed
             // 42e,38,43,1,0,1,A,,,e3\n"  Charging Pilot Current
+            m_charge_pilot_current->SetValue((int(d[4]) << 4 | d[5] >> 4) & 63);
+            if (m_charge_pilot_current->AsInt() > 0) {
+                StdMetrics.ms_v_charge_pilot->SetValue(true);
+            } else {
+                StdMetrics.ms_v_charge_pilot->SetValue(false);
+            }
             // 42e,44,50,1,40,0,°C,,,e3\n"  HV Battery Temp
+            // We rather use calculation than measurement since value recieved has no decimals
 //            StdMetrics.ms_v_bat_temp->SetValue((float(CAN_7NIBL(45))-40));
             // 42e,56,63,0.3,0,1,kW,,,ff\n"  Max Charge Power
             m_b_bat_max_charge_power->SetValue((float(d[7])*0.3));
@@ -252,6 +266,7 @@ void OvmsVehicleRenaultZoe::IncomingFrameCan1(CAN_frame_t* p_frame)
             // 430,24,33,0.5,30,1,°C,,,e2\n"  Comp Temperature Discharge
             // 430,38,39,1,0,0,,,,e2\n"  HV Battery Cooling State
             // 430,40,49,0.1,400,1,°C,,,e2\n"  HV Battery Evaporator Temp
+            m_bat_heat_sink_temp->SetValue((float(UINT((d[5] << 2) | d[6] >> 6) & 1023) - 400)*0.1);
         }
             break;
         case 0x432:
@@ -272,8 +287,9 @@ void OvmsVehicleRenaultZoe::IncomingFrameCan1(CAN_frame_t* p_frame)
             // 654,2,2,1,0,0,,,,ff\n" // Charging Plug Connected
             // 654,25,31,1,0,0,,,,ff\n" // State of Charge
             // 654,32,41,1,0,0,min,,,ff\n" // Time to Full
-            StdMetrics.ms_v_charge_duration_full->SetValue((((UINT)d[4] << 8) | d[5]) & 1023);
+            StdMetrics.ms_v_charge_duration_full->SetValue((UINT(d[4] << 2) | d[5] >> 6) & 1023);
             // 654,42,51,1,0,0,km,,,ff\n" // Available Distance
+            StdMetrics.ms_v_bat_range_est->SetValue((UINT(d[5] << 2) | d[6] >> 4) & 1023);
         }
             break;
         case 0x656:
@@ -330,15 +346,22 @@ void OvmsVehicleRenaultZoe::IncomingPollReply(canbus* bus, uint16_t type, uint16
 //    uint8_t bVal;
 //    UINT base;
 //    uint32_t lVal;
-    
+
+
     switch (m_poll_moduleid_low) {
         case 0x7ec:
             switch (pid) {
+              
                 case 0x2002: {
                     // 7ec,24,39,2.083333333,0,2,%,222002,622002,e5\n" // SOC
                     StdMetrics.ms_v_bat_soc->SetValue( float(CAN_UINT(0)) * 2 / 100);
                 }
                     break;
+                case 0x2003: {
+                     // 7ec,24,39,.01,0,0,km/h,222003,622003,ff,Vehicle speed
+                    StdMetrics.ms_v_pos_speed->SetValue( float(CAN_UINT(0))  * 100);
+                }
+                break;
                 case 0x2006: {
                     // 7ec,24,47,1,0,0,km,222006,622006,ff\n" // Odometer
                     StdMetrics.ms_v_pos_odometer->SetValue(float(CAN_UINT24(0)));
@@ -456,6 +479,22 @@ void OvmsVehicleRenaultZoe::IncomingPollReply(canbus* bus, uint16_t type, uint16
                     break;
             }
             break;
+        case 0x7bc:
+        switch (pid) {
+            case 0x4B7C:
+            {
+                // Todo
+                // //+"7bc,28,39,1,4094,0,N·m,224B7C,624B7C,ff,Electric brake wheels torque request\n"  // Brake Torque
+            }
+            break;
+            case 0x4B7D:
+            {
+                //"7bc,28,39,1,4094,0,N·m,224B7D,624B7D,ff,Total Hydraulic brake wheels torque request\n"
+                m_v_hydraulic_brake_power->SetValue(float(CAN_12NIBL(28) -4094)*StdMetrics.ms_v_pos_speed->AsFloat()/3.6/1.28*2*3.141 );
+            }
+            break;
+        }
+        break;
         case 0x77e:
             switch (pid) {
                     //            case 0x3018:
